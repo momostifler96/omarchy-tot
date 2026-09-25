@@ -1,0 +1,688 @@
+#!/bin/bash
+# Cloud sync and backups for Tot notes (momoledev.tot shell plugin), via rclone.
+#
+#   tot-sync setup [google|s3|ftp|custom]  configure the cloud remote (interactive)
+#   tot-sync sync                          two-way sync notes <-> cloud
+#   tot-sync backup                        timestamped snapshot, local + cloud
+#   tot-sync backups                       list backups
+#   tot-sync restore [latest|<name>]       restore a backup (current notes are backed up first)
+#   tot-sync enable | disable              automatic sync (every 5 min + on save) and daily backup
+#   tot-sync status                        show configuration and last result
+#
+# Cloud layout: <REMOTE>/notes (synced notes), <REMOTE>/backups (snapshots).
+
+set -uo pipefail
+
+NOTES_DIR="$HOME/.local/share/omarchy-tot"
+BACKUP_DIR="$HOME/.local/share/omarchy-tot-backups"
+STATE_DIR="$HOME/.local/state/omarchy-tot"
+STATUS_FILE="$STATE_DIR/sync.json"
+CONF_DIR="$HOME/.config/omarchy-tot"
+CONF="$CONF_DIR/sync.conf"
+LOCK="$STATE_DIR/sync.lock"
+
+# Defaults, overridden by sync.conf
+REMOTE=""
+LOCAL_BACKUP_KEEP=30
+REMOTE_BACKUP_KEEP_DAYS=90
+BISYNC_EXTRA=""
+
+[[ -f $CONF ]] && source "$CONF"
+
+RCLONE=$(command -v rclone || echo "$HOME/.local/share/mise/shims/rclone")
+
+# ---- i18n -----------------------------------------------------------------
+# Language: $TOT_LANG, else the plugin's "language" setting in shell.json,
+# else English. "auto" follows $LANG. Supported: en fr es de pt.
+
+resolve_lang() {
+  local l=${TOT_LANG:-}
+  if [[ -z $l ]] && command -v jq >/dev/null && [[ -f $HOME/.config/omarchy/shell.json ]]; then
+    l=$(jq -r '[.bar.layout[]?[]? | select(.id == "momoledev.tot") | .language // empty][0] // empty' \
+      "$HOME/.config/omarchy/shell.json" 2>/dev/null)
+  fi
+  l=${l:-en}
+  [[ $l == auto ]] && l=${LANG:-en}
+  l=${l:0:2}
+  case $l in en | fr | es | de | pt) echo "$l" ;; *) echo en ;; esac
+}
+UI_LANG=$(resolve_lang)
+
+declare -A M=(
+  [en.no_remote]="no cloud configured. Run: tot-sync setup"
+  [fr.no_remote]="aucun cloud configuré. Lance : tot-sync setup"
+  [es.no_remote]="no hay ninguna nube configurada. Ejecuta: tot-sync setup"
+  [de.no_remote]="keine Cloud eingerichtet. Ausführen: tot-sync setup"
+  [pt.no_remote]="nenhuma nuvem configurada. Execute: tot-sync setup"
+
+  [en.status_off]="Cloud not set up"
+  [fr.status_off]="Cloud non configuré"
+  [es.status_off]="Nube no configurada"
+  [de.status_off]="Cloud nicht eingerichtet"
+  [pt.status_off]="Nuvem não configurada"
+
+  [en.busy]="sync already running"
+  [fr.busy]="synchro déjà en cours"
+  [es.busy]="sincronización ya en curso"
+  [de.busy]="Synchronisierung läuft bereits"
+  [pt.busy]="sincronização já em andamento"
+
+  [en.sync_ok]="Sync OK (%s)"
+  [fr.sync_ok]="Synchro OK (%s)"
+  [es.sync_ok]="Sincronización OK (%s)"
+  [de.sync_ok]="Synchronisierung OK (%s)"
+  [pt.sync_ok]="Sincronização OK (%s)"
+
+  [en.notify_title]="Tot: sync failed"
+  [fr.notify_title]="Tot : échec de la synchro"
+  [es.notify_title]="Tot: falló la sincronización"
+  [de.notify_title]="Tot: Synchronisierung fehlgeschlagen"
+  [pt.notify_title]="Tot: falha na sincronização"
+
+  [en.archive_fail]="could not create the archive"
+  [fr.archive_fail]="échec de l'archive"
+  [es.archive_fail]="no se pudo crear el archivo"
+  [de.archive_fail]="Archiv konnte nicht erstellt werden"
+  [pt.archive_fail]="não foi possível criar o arquivo"
+
+  [en.local_backup]="Local backup: %s"
+  [fr.local_backup]="Sauvegarde locale : %s"
+  [es.local_backup]="Copia local: %s"
+  [de.local_backup]="Lokales Backup: %s"
+  [pt.local_backup]="Backup local: %s"
+
+  [en.cloud_backup]="Cloud backup: %s"
+  [fr.cloud_backup]="Sauvegarde cloud : %s"
+  [es.cloud_backup]="Copia en la nube: %s"
+  [de.cloud_backup]="Cloud-Backup: %s"
+  [pt.cloud_backup]="Backup na nuvem: %s"
+
+  [en.upload_fail]="Could not upload the backup to %s"
+  [fr.upload_fail]="Envoi de la sauvegarde vers %s impossible"
+  [es.upload_fail]="No se pudo subir la copia a %s"
+  [de.upload_fail]="Backup konnte nicht nach %s hochgeladen werden"
+  [pt.upload_fail]="Não foi possível enviar o backup para %s"
+
+  [en.list_local]="== Local (%s)"
+  [fr.list_local]="== Locales (%s)"
+  [es.list_local]="== Locales (%s)"
+  [de.list_local]="== Lokal (%s)"
+  [pt.list_local]="== Locais (%s)"
+
+  [en.list_cloud]="== Cloud (%s)"
+  [fr.list_cloud]="== Cloud (%s)"
+  [es.list_cloud]="== Nube (%s)"
+  [de.list_cloud]="== Cloud (%s)"
+  [pt.list_cloud]="== Nuvem (%s)"
+
+  [en.no_backup]="no backup found"
+  [fr.no_backup]="aucune sauvegarde trouvée"
+  [es.no_backup]="no se encontró ninguna copia"
+  [de.no_backup]="kein Backup gefunden"
+  [pt.no_backup]="nenhum backup encontrado"
+
+  [en.backup_missing]="backup not found: %s"
+  [fr.backup_missing]="sauvegarde introuvable : %s"
+  [es.backup_missing]="copia no encontrada: %s"
+  [de.backup_missing]="Backup nicht gefunden: %s"
+  [pt.backup_missing]="backup não encontrado: %s"
+
+  [en.safety]="Backing up current notes first…"
+  [fr.safety]="Sauvegarde de sécurité des notes actuelles…"
+  [es.safety]="Copia de seguridad de las notas actuales…"
+  [de.safety]="Sicherheitsbackup der aktuellen Notizen…"
+  [pt.safety]="Backup de segurança das notas atuais…"
+
+  [en.restore_fail]="restore failed"
+  [fr.restore_fail]="échec de la restauration"
+  [es.restore_fail]="falló la restauración"
+  [de.restore_fail]="Wiederherstellung fehlgeschlagen"
+  [pt.restore_fail]="falha na restauração"
+
+  [en.restored]="Restored: %s"
+  [fr.restored]="Restauré : %s"
+  [es.restored]="Restaurado: %s"
+  [de.restored]="Wiederhergestellt: %s"
+  [pt.restored]="Restaurado: %s"
+
+  [en.where]="Where should the notes be synced?"
+  [fr.where]="Où synchroniser les notes ?"
+  [es.where]="¿Dónde sincronizar las notas?"
+  [de.where]="Wohin sollen die Notizen synchronisiert werden?"
+  [pt.where]="Onde sincronizar as notas?"
+
+  [en.opt_other]="Other rclone remote (SFTP, Dropbox, OneDrive, WebDAV…)"
+  [fr.opt_other]="Autre remote rclone (SFTP, Dropbox, OneDrive, WebDAV…)"
+  [es.opt_other]="Otro remote de rclone (SFTP, Dropbox, OneDrive, WebDAV…)"
+  [de.opt_other]="Anderes rclone-Remote (SFTP, Dropbox, OneDrive, WebDAV…)"
+  [pt.opt_other]="Outro remote do rclone (SFTP, Dropbox, OneDrive, WebDAV…)"
+
+  [en.choice]="Choice"
+  [fr.choice]="Choix"
+  [es.choice]="Opción"
+  [de.choice]="Auswahl"
+  [pt.choice]="Opção"
+
+  [en.google_info]="A Google authorization page will open in your browser (access limited to files created by rclone)."
+  [fr.google_info]="Une page d'autorisation Google va s'ouvrir dans le navigateur (accès limité aux fichiers créés par rclone)."
+  [es.google_info]="Se abrirá una página de autorización de Google en el navegador (acceso limitado a los archivos creados por rclone)."
+  [de.google_info]="Im Browser öffnet sich eine Google-Autorisierungsseite (Zugriff nur auf von rclone erstellte Dateien)."
+  [pt.google_info]="Uma página de autorização do Google será aberta no navegador (acesso limitado aos arquivos criados pelo rclone)."
+
+  [en.setup_fail]="%s setup failed"
+  [fr.setup_fail]="configuration %s échouée"
+  [es.setup_fail]="falló la configuración de %s"
+  [de.setup_fail]="Einrichtung von %s fehlgeschlagen"
+  [pt.setup_fail]="falha na configuração de %s"
+
+  [en.folder]="Folder"
+  [fr.folder]="Dossier"
+  [es.folder]="Carpeta"
+  [de.folder]="Ordner"
+  [pt.folder]="Pasta"
+
+  [en.providers]="Providers: AWS, Cloudflare, Wasabi, Minio, Scaleway, Other (Backblaze B2: Other + endpoint)"
+  [fr.providers]="Fournisseurs : AWS, Cloudflare, Wasabi, Minio, Scaleway, Other (Backblaze B2 : Other + endpoint)"
+  [es.providers]="Proveedores: AWS, Cloudflare, Wasabi, Minio, Scaleway, Other (Backblaze B2: Other + endpoint)"
+  [de.providers]="Anbieter: AWS, Cloudflare, Wasabi, Minio, Scaleway, Other (Backblaze B2: Other + Endpoint)"
+  [pt.providers]="Provedores: AWS, Cloudflare, Wasabi, Minio, Scaleway, Other (Backblaze B2: Other + endpoint)"
+
+  [en.provider]="Provider"
+  [fr.provider]="Fournisseur"
+  [es.provider]="Proveedor"
+  [de.provider]="Anbieter"
+  [pt.provider]="Provedor"
+
+  [en.region]="Region"
+  [fr.region]="Région"
+  [es.region]="Región"
+  [de.region]="Region"
+  [pt.region]="Região"
+
+  [en.endpoint]="Endpoint (empty for AWS)"
+  [fr.endpoint]="Endpoint (vide pour AWS)"
+  [es.endpoint]="Endpoint (vacío para AWS)"
+  [de.endpoint]="Endpoint (leer für AWS)"
+  [pt.endpoint]="Endpoint (vazio para AWS)"
+
+  [en.host]="Host"
+  [fr.host]="Hôte"
+  [es.host]="Servidor"
+  [de.host]="Host"
+  [pt.host]="Servidor"
+
+  [en.user]="User"
+  [fr.user]="Utilisateur"
+  [es.user]="Usuario"
+  [de.user]="Benutzer"
+  [pt.user]="Usuário"
+
+  [en.password]="Password"
+  [fr.password]="Mot de passe"
+  [es.password]="Contraseña"
+  [de.password]="Passwort"
+  [pt.password]="Senha"
+
+  [en.tls]="Use explicit TLS (FTPS)? (y/n)"
+  [fr.tls]="Chiffrement TLS explicite (FTPS) ? (o/n)"
+  [es.tls]="¿Usar TLS explícito (FTPS)? (s/n)"
+  [de.tls]="Explizites TLS (FTPS) verwenden? (j/n)"
+  [pt.tls]="Usar TLS explícito (FTPS)? (s/n)"
+
+  [en.yes]="y"
+  [fr.yes]="o"
+  [es.yes]="s"
+  [de.yes]="j"
+  [pt.yes]="s"
+
+  [en.remotes]="Existing rclone remotes:"
+  [fr.remotes]="Remotes rclone existants :"
+  [es.remotes]="Remotes de rclone existentes:"
+  [de.remotes]="Vorhandene rclone-Remotes:"
+  [pt.remotes]="Remotes do rclone existentes:"
+
+  [en.remote_name]="Remote name (create one first with \"rclone config\")"
+  [fr.remote_name]="Nom du remote (crée-le d'abord avec « rclone config »)"
+  [es.remote_name]="Nombre del remote (créalo antes con \"rclone config\")"
+  [de.remote_name]="Name des Remotes (vorher mit \"rclone config\" anlegen)"
+  [pt.remote_name]="Nome do remote (crie antes com \"rclone config\")"
+
+  [en.unknown_kind]="unknown type: %s (google, s3, ftp, custom)"
+  [fr.unknown_kind]="type inconnu : %s (google, s3, ftp, custom)"
+  [es.unknown_kind]="tipo desconocido: %s (google, s3, ftp, custom)"
+  [de.unknown_kind]="unbekannter Typ: %s (google, s3, ftp, custom)"
+  [pt.unknown_kind]="tipo desconhecido: %s (google, s3, ftp, custom)"
+
+  [en.testing]="Testing connection to %s…"
+  [fr.testing]="Test de la connexion à %s…"
+  [es.testing]="Probando la conexión con %s…"
+  [de.testing]="Verbindung zu %s wird getestet…"
+  [pt.testing]="Testando a conexão com %s…"
+
+  [en.no_access]="cannot access %s"
+  [fr.no_access]="impossible d'accéder à %s"
+  [es.no_access]="no se puede acceder a %s"
+  [de.no_access]="kein Zugriff auf %s"
+  [pt.no_access]="não é possível acessar %s"
+
+  [en.conf_saved]="Configuration saved to %s"
+  [fr.conf_saved]="Configuration enregistrée dans %s"
+  [es.conf_saved]="Configuración guardada en %s"
+  [de.conf_saved]="Konfiguration gespeichert in %s"
+  [pt.conf_saved]="Configuração salva em %s"
+
+  [en.first_sync]="First sync (merge: newest version wins)…"
+  [fr.first_sync]="Première synchronisation (fusion : la version la plus récente gagne)…"
+  [es.first_sync]="Primera sincronización (fusión: gana la versión más reciente)…"
+  [de.first_sync]="Erste Synchronisierung (Zusammenführung: neueste Version gewinnt)…"
+  [pt.first_sync]="Primeira sincronização (mescla: a versão mais recente vence)…"
+
+  [en.done]="Done. Notes now sync automatically."
+  [fr.done]="Terminé. Les notes se synchronisent automatiquement."
+  [es.done]="Listo. Las notas se sincronizan automáticamente."
+  [de.done]="Fertig. Die Notizen werden jetzt automatisch synchronisiert."
+  [pt.done]="Pronto. As notas agora são sincronizadas automaticamente."
+
+  [en.enabled]="Automation on: sync every 5 min + after each edit, daily backup."
+  [fr.enabled]="Automatisation activée : synchro toutes les 5 min + après chaque modification, sauvegarde quotidienne."
+  [es.enabled]="Automatización activada: sincronización cada 5 min + tras cada cambio, copia diaria."
+  [de.enabled]="Automatik an: Sync alle 5 Min. + nach jeder Änderung, tägliches Backup."
+  [pt.enabled]="Automação ativada: sincronização a cada 5 min + após cada edição, backup diário."
+
+  [en.disabled]="Automation off (tot-sync sync / backup still work manually)."
+  [fr.disabled]="Automatisation désactivée (tot-sync sync / backup restent utilisables à la main)."
+  [es.disabled]="Automatización desactivada (tot-sync sync / backup siguen funcionando a mano)."
+  [de.disabled]="Automatik aus (tot-sync sync / backup funktionieren weiterhin manuell)."
+  [pt.disabled]="Automação desativada (tot-sync sync / backup continuam funcionando manualmente)."
+
+  [en.st_cloud]="Cloud"
+  [fr.st_cloud]="Cloud"
+  [es.st_cloud]="Nube"
+  [de.st_cloud]="Cloud"
+  [pt.st_cloud]="Nuvem"
+
+  [en.st_notes]="Notes"
+  [fr.st_notes]="Notes"
+  [es.st_notes]="Notas"
+  [de.st_notes]="Notizen"
+  [pt.st_notes]="Notas"
+
+  [en.st_backups]="Backups"
+  [fr.st_backups]="Sauvegardes"
+  [es.st_backups]="Copias"
+  [de.st_backups]="Backups"
+  [pt.st_backups]="Backups"
+
+  [en.st_local]="%s local"
+  [fr.st_local]="%s locales"
+  [es.st_local]="%s locales"
+  [de.st_local]="%s lokal"
+  [pt.st_local]="%s locais"
+
+  [en.st_last]="Last state"
+  [fr.st_last]="Dernier état"
+  [es.st_last]="Último estado"
+  [de.st_last]="Letzter Status"
+  [pt.st_last]="Último estado"
+
+  [en.not_configured]="not configured"
+  [fr.not_configured]="non configuré"
+  [es.not_configured]="no configurada"
+  [de.not_configured]="nicht eingerichtet"
+  [pt.not_configured]="não configurada"
+)
+
+# t key [printf args...] — message in UI_LANG, falling back to English.
+t() {
+  local key=$1; shift
+  local fmt=${M[$UI_LANG.$key]:-${M[en.$key]:-$key}}
+  # shellcheck disable=SC2059
+  printf "$fmt" "$@"
+}
+
+mkdir -p "$NOTES_DIR" "$BACKUP_DIR" "$STATE_DIR"
+
+die() { echo "tot-sync: $*" >&2; exit 1; }
+
+json_escape() { local s=${1//\\/\\\\}; s=${s//\"/\\\"}; s=${s//$'\n'/ }; printf '%s' "$s"; }
+
+write_status() { # state message
+  local tmp="$STATUS_FILE.tmp"
+  printf '{"state":"%s","time":%s,"remote":"%s","message":"%s"}\n' \
+    "$1" "$(date +%s)" "$(json_escape "$REMOTE")" "$(json_escape "$2")" >"$tmp"
+  mv -f "$tmp" "$STATUS_FILE"
+}
+
+notify_error() {
+  command -v notify-send >/dev/null && notify-send -u critical "$(t notify_title)" "$1"
+}
+
+require_remote() {
+  [[ -n $REMOTE ]] || die "$(t no_remote)"
+}
+
+save_conf() {
+  mkdir -p "$CONF_DIR"
+  cat >"$CONF" <<EOF
+# Tot notes cloud sync (read by ~/.local/bin/tot-sync)
+# rclone remote + folder, e.g. tot-gdrive:Tot, tot-s3:my-bucket/tot, tot-ftp:tot
+REMOTE="$REMOTE"
+# Local snapshots kept in $BACKUP_DIR
+LOCAL_BACKUP_KEEP=$LOCAL_BACKUP_KEEP
+# Cloud snapshots older than this are deleted
+REMOTE_BACKUP_KEEP_DAYS=$REMOTE_BACKUP_KEEP_DAYS
+# Extra rclone bisync flags (e.g. "--compare size" for FTP servers without mtime)
+BISYNC_EXTRA="$BISYNC_EXTRA"
+EOF
+}
+
+bisync_marker() { echo "$STATE_DIR/bisync-$(printf '%s' "$REMOTE" | md5sum | cut -c1-12)"; }
+
+# --force: with only a note or two, a single edit changes "all files", which
+# bisync would otherwise abort on. Daily snapshots + conflict copies cover us.
+
+# ---- sync -----------------------------------------------------------------
+
+run_bisync() { # extra flags...
+  # shellcheck disable=SC2086
+  "$RCLONE" bisync "$NOTES_DIR" "$REMOTE/notes" \
+    --include "*.md" \
+    --create-empty-src-dirs \
+    --conflict-resolve newer --conflict-loser num \
+    --conflict-suffix conflict --suffix-keep-extension \
+    --resilient --recover --max-lock 5m \
+    --force \
+    $BISYNC_EXTRA "$@" 2>&1
+}
+
+cmd_sync() {
+  if [[ -z $REMOTE ]]; then
+    write_status "off" "$(t status_off)"
+    return 0
+  fi
+
+  exec 9>"$LOCK"
+  flock -n 9 || { echo "tot-sync: $(t busy)"; return 0; }
+
+  write_status "syncing" ""
+  local marker out rc
+  marker=$(bisync_marker)
+
+  if [[ -f $marker ]]; then
+    out=$(run_bisync); rc=$?
+    # State lost or corrupted: rebuild it, merging both sides (newest wins).
+    if ((rc != 0)) && grep -qi "resync" <<<"$out"; then
+      out=$(run_bisync --resync --resync-mode newer); rc=$?
+    fi
+  else
+    "$RCLONE" mkdir "$REMOTE/notes" >/dev/null 2>&1
+    out=$(run_bisync --resync --resync-mode newer); rc=$?
+    ((rc == 0)) && touch "$marker"
+  fi
+
+  if ((rc == 0)); then
+    write_status "ok" ""
+    t sync_ok "$REMOTE"; echo
+  else
+    local msg
+    msg=$(grep -iE "error|failed" <<<"$out" | tail -1)
+    [[ -n $msg ]] || msg=$(tail -1 <<<"$out")
+    msg=$(sed -E 's/^[0-9\/]+ [0-9:]+ [A-Z]+ *: *//; s/\x1b\[[0-9;]*m//g' <<<"$msg")
+    write_status "error" "$msg"
+    notify_error "$msg"
+    echo "$out" >&2
+    return 1
+  fi
+}
+
+# ---- backups --------------------------------------------------------------
+
+cmd_backup() {
+  local name="tot-$(date +%Y%m%d-%H%M%S).tar.gz"
+  tar -czf "$BACKUP_DIR/$name" -C "$NOTES_DIR" --exclude='*.tmp' . || die "$(t archive_fail)"
+  t local_backup "$BACKUP_DIR/$name"; echo
+
+  # Local retention
+  ls -1t "$BACKUP_DIR"/tot-*.tar.gz 2>/dev/null | tail -n +$((LOCAL_BACKUP_KEEP + 1)) | xargs -r rm -f
+
+  if [[ -n $REMOTE ]]; then
+    if "$RCLONE" copyto "$BACKUP_DIR/$name" "$REMOTE/backups/$name" 2>&1; then
+      t cloud_backup "$REMOTE/backups/$name"; echo
+      "$RCLONE" delete "$REMOTE/backups" --min-age "${REMOTE_BACKUP_KEEP_DAYS}d" --include "tot-*.tar.gz" >/dev/null 2>&1
+    else
+      notify_error "$(t upload_fail "$REMOTE")"
+      return 1
+    fi
+  fi
+}
+
+cmd_backups() {
+  t list_local "$BACKUP_DIR"; echo
+  ls -1t "$BACKUP_DIR"/tot-*.tar.gz 2>/dev/null | xargs -r -n1 basename
+  if [[ -n $REMOTE ]]; then
+    t list_cloud "$REMOTE/backups"; echo
+    "$RCLONE" lsf "$REMOTE/backups" --include "tot-*.tar.gz" 2>/dev/null | sort -r
+  fi
+}
+
+cmd_restore() {
+  local want=${1:-latest} file=""
+  if [[ $want == latest ]]; then
+    file=$(ls -1t "$BACKUP_DIR"/tot-*.tar.gz 2>/dev/null | head -1)
+    if [[ -z $file && -n $REMOTE ]]; then
+      want=$("$RCLONE" lsf "$REMOTE/backups" --include "tot-*.tar.gz" 2>/dev/null | sort -r | head -1)
+    fi
+  fi
+  if [[ -z $file ]]; then
+    [[ -n $want && $want != latest ]] || die "$(t no_backup)"
+    if [[ -f $BACKUP_DIR/$want ]]; then
+      file="$BACKUP_DIR/$want"
+    else
+      require_remote
+      "$RCLONE" copyto "$REMOTE/backups/$want" "$BACKUP_DIR/$want" || die "$(t backup_missing "$want")"
+      file="$BACKUP_DIR/$want"
+    fi
+  fi
+
+  t safety; echo
+  cmd_backup >/dev/null
+  tar -xzf "$file" -C "$NOTES_DIR" --touch || die "$(t restore_fail)"
+  t restored "$(basename "$file")"; echo
+  [[ -n $REMOTE ]] && cmd_sync
+}
+
+# ---- setup ----------------------------------------------------------------
+
+ask() { # prompt [default] -> REPLY
+  local prompt=$1 def=${2:-}
+  if [[ -n $def ]]; then read -rp "$prompt [$def] : " REPLY; REPLY=${REPLY:-$def}
+  else read -rp "$prompt : " REPLY; fi
+}
+
+ask_secret() { read -rsp "$1 : " REPLY; echo; }
+
+cmd_setup() {
+  local kind=${1:-} name folder
+  if [[ -z $kind ]]; then
+    t where; echo
+    echo "  1) Google Drive"
+    echo "  2) S3 (AWS, Cloudflare R2, Backblaze B2, Wasabi, MinIO…)"
+    echo "  3) FTP / FTPS"
+    echo "  4) $(t opt_other)"
+    ask "$(t choice)" 1
+    case $REPLY in 1) kind=google ;; 2) kind=s3 ;; 3) kind=ftp ;; *) kind=custom ;; esac
+  fi
+
+  case $kind in
+  google | gdrive)
+    name=tot-gdrive
+    t google_info; echo
+    "$RCLONE" config create "$name" drive scope drive.file || die "$(t setup_fail "Google Drive")"
+    ask "$(t folder) (Google Drive)" "Tot"
+    folder=$REPLY
+    ;;
+  s3)
+    name=tot-s3
+    t providers; echo
+    ask "$(t provider)" "AWS"; local provider=$REPLY
+    ask "Access key ID"; local key=$REPLY
+    ask_secret "Secret access key"; local secret=$REPLY
+    ask "$(t region)" "us-east-1"; local region=$REPLY
+    ask "$(t endpoint)" ""; local endpoint=$REPLY
+    ask "Bucket"; local bucket=$REPLY
+    ask "$(t folder) (bucket)" "tot"; local prefix=$REPLY
+    local args=(provider "$provider" access_key_id "$key" secret_access_key "$secret" region "$region")
+    [[ -n $endpoint ]] && args+=(endpoint "$endpoint")
+    "$RCLONE" config create "$name" s3 "${args[@]}" --non-interactive >/dev/null || die "$(t setup_fail S3)"
+    folder="$bucket/$prefix"
+    "$RCLONE" mkdir "$name:$bucket" >/dev/null 2>&1
+    ;;
+  ftp)
+    name=tot-ftp
+    ask "$(t host)"; local host=$REPLY
+    ask "Port" "21"; local port=$REPLY
+    ask "$(t user)"; local user=$REPLY
+    ask_secret "$(t password)"; local pass=$REPLY
+    ask "$(t tls)" "$(t yes)"; local tls=false
+    [[ ${REPLY,,} == "$(t yes)"* || ${REPLY,,} == y* ]] && tls=true
+    "$RCLONE" config create "$name" ftp host "$host" port "$port" user "$user" pass "$pass" \
+      explicit_tls "$tls" --non-interactive >/dev/null || die "$(t setup_fail FTP)"
+    ask "$(t folder)" "tot"
+    folder=$REPLY
+    # Many FTP servers can't set modification times; compare by size then.
+    BISYNC_EXTRA="--compare size"
+    ;;
+  custom)
+    t remotes; echo
+    "$RCLONE" listremotes
+    ask "$(t remote_name)"
+    name=${REPLY%:}
+    ask "$(t folder)" "Tot"
+    folder=$REPLY
+    ;;
+  *) die "$(t unknown_kind "$kind")" ;;
+  esac
+
+  REMOTE="$name:$folder"
+  t testing "$REMOTE"; echo
+  "$RCLONE" mkdir "$REMOTE" || die "$(t no_access "$REMOTE")"
+  save_conf
+  t conf_saved "$CONF"; echo
+
+  t first_sync; echo
+  rm -f "$(bisync_marker)"
+  cmd_sync || exit 1
+  cmd_backup
+  cmd_enable
+  echo
+  t done; echo
+}
+
+# ---- automation -----------------------------------------------------------
+
+UNIT_DIR="$HOME/.config/systemd/user"
+
+cmd_enable() {
+  mkdir -p "$UNIT_DIR"
+  local bin="$HOME/.local/bin/tot-sync"
+
+  cat >"$UNIT_DIR/tot-sync.service" <<EOF
+[Unit]
+Description=Tot notes cloud sync
+
+[Service]
+Type=oneshot
+ExecStart=$bin sync
+EOF
+
+  # Saves arrive every few hundred ms while typing: wait, then sync once.
+  cat >"$UNIT_DIR/tot-sync-debounced.service" <<EOF
+[Unit]
+Description=Tot notes cloud sync (after edits)
+
+[Service]
+Type=oneshot
+ExecStartPre=/usr/bin/sleep 20
+ExecStart=$bin sync
+EOF
+
+  cat >"$UNIT_DIR/tot-sync.timer" <<EOF
+[Unit]
+Description=Tot notes cloud sync every 5 minutes
+
+[Timer]
+OnBootSec=1min
+OnUnitActiveSec=5min
+Unit=tot-sync.service
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  cat >"$UNIT_DIR/tot-sync.path" <<EOF
+[Unit]
+Description=Sync Tot notes when they change
+
+[Path]
+PathChanged=$NOTES_DIR
+Unit=tot-sync-debounced.service
+
+[Install]
+WantedBy=default.target
+EOF
+
+  cat >"$UNIT_DIR/tot-backup.service" <<EOF
+[Unit]
+Description=Tot notes backup
+
+[Service]
+Type=oneshot
+ExecStart=$bin backup
+EOF
+
+  cat >"$UNIT_DIR/tot-backup.timer" <<EOF
+[Unit]
+Description=Daily Tot notes backup
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=10min
+
+[Install]
+WantedBy=timers.target
+EOF
+
+  systemctl --user daemon-reload
+  systemctl --user enable --now tot-sync.timer tot-sync.path tot-backup.timer >/dev/null 2>&1
+  t enabled; echo
+}
+
+cmd_disable() {
+  systemctl --user disable --now tot-sync.timer tot-sync.path tot-backup.timer >/dev/null 2>&1
+  t disabled; echo
+}
+
+cmd_status() {
+  local count
+  count=$(ls -1 "$BACKUP_DIR"/tot-*.tar.gz 2>/dev/null | wc -l)
+  printf '%-17s: %s\n' "$(t st_cloud)" "${REMOTE:-$(t not_configured)}"
+  printf '%-17s: %s\n' "$(t st_notes)" "$NOTES_DIR"
+  printf '%-17s: %s (%s)\n' "$(t st_backups)" "$BACKUP_DIR" "$(t st_local "$count")"
+  [[ -f $STATUS_FILE ]] && printf '%-17s: %s\n' "$(t st_last)" "$(cat "$STATUS_FILE")"
+  for u in tot-sync.timer tot-sync.path tot-backup.timer; do
+    printf '%-17s: %s\n' "$u" "$(systemctl --user is-active "$u" 2>/dev/null)"
+  done
+}
+
+case "${1:-status}" in
+setup) shift; cmd_setup "$@" ;;
+sync) cmd_sync ;;
+backup) cmd_backup ;;
+backups | list) cmd_backups ;;
+restore) shift; cmd_restore "$@" ;;
+enable) require_remote; cmd_enable ;;
+disable) cmd_disable ;;
+status) cmd_status ;;
+*) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+esac

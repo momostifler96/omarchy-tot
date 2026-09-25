@@ -1,0 +1,72 @@
+{
+  "schemaVersion": 1,
+  "id": "momoledev.tot",
+  "name": "Tot",
+  "version": "1.0.0",
+  "author": "momoledev",
+  "license": "MIT",
+  "description": "Tot-style scratch notes in the bar: 10 colored tabs, autosaved plain-text files, keyboard driven.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "Widget.qml"
+  },
+  "barWidget": {
+    "displayName": "Tot",
+    "description": "Ten quick notes with keyboard navigation.",
+    "category": "Productivity",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "width": 560,
+      "height": 440,
+      "fontSize": 14,
+      "language": "en"
+    },
+    "schema": [
+      {
+        "key": "width",
+        "type": "integer",
+        "label": "Panel width",
+        "min": 320,
+        "max": 1600,
+        "step": 20,
+        "defaultValue": 560
+      },
+      {
+        "key": "height",
+        "type": "integer",
+        "label": "Panel height",
+        "min": 200,
+        "max": 1200,
+        "step": 20,
+        "defaultValue": 440
+      },
+      {
+        "key": "fontSize",
+        "type": "integer",
+        "label": "Font size",
+        "min": 9,
+        "max": 32,
+        "step": 1,
+        "defaultValue": 14
+      },
+      {
+        "key": "language",
+        "type": "enum",
+        "label": "Language",
+        "options": [
+          "en",
+          "fr",
+          "es",
+          "de",
+          "pt",
+          "auto"
+        ],
+        "defaultValue": "en",
+        "description": "en = English, fr = Français, es = Español, de = Deutsch, pt = Português, auto = system locale."
+      }
+    ]
+  }
+}

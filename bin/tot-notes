@@ -1,0 +1,25 @@
+#!/bin/bash
+# Tot notes (momoledev.tot shell plugin) controller.
+#   tot-notes            toggle the panel
+#   tot-notes open|close
+#   tot-notes <1-10|0>   open the panel on that note (0 = note 10)
+
+id="momoledev.tot"
+state="$HOME/.local/state/omarchy-tot"
+
+case "${1:-toggle}" in
+toggle) omarchy-shell -q shell toggle "$id" '{}' ;;
+open) omarchy-shell -q shell summon "$id" '{}' ;;
+close) omarchy-shell -q shell hide "$id" ;;
+0 | [1-9] | 10)
+  tab=$1
+  [[ $tab == 0 ]] && tab=10
+  mkdir -p "$state"
+  printf '%s\n' "$tab" >"$state/current"
+  omarchy-shell -q shell summon "$id" '{}'
+  ;;
+*)
+  echo "usage: tot-notes [toggle|open|close|1-10]" >&2
+  exit 1
+  ;;
+esac
