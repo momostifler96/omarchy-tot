@@ -13,7 +13,7 @@ tabs, autosaved plain-text files, keyboard driven, with optional cloud sync
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/<user>/omarchy-tot.git --enable
+omarchy plugin add https://github.com/momostifler96/omarchy-tot.git --enable
 ~/.config/omarchy/plugins/momoledev.tot/install.sh --bindings
 ```
 
