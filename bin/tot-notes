@@ -1,5 +1,5 @@
 #!/bin/bash
-# Tot notes (momoledev.tot shell plugin) controller.
+# Quick Note (momoledev.tot shell plugin) controller.
 #   tot-notes            toggle the panel
 #   tot-notes open|close
 #   tot-notes <1-10|0>   open the panel on that note (0 = note 10)

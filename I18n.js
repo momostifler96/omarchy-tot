@@ -1,6 +1,6 @@
 .pragma library
 
-// UI strings for the Tot panel. English is the default and the fallback for
+// UI strings for the Quick Note panel. English is the default and the fallback for
 // any missing key. `{n}` is replaced by the count passed to tr().
 var languages = ["en", "fr", "es", "de", "pt"]
 

@@ -1,10 +1,10 @@
-# Tot for Omarchy
+# Quick Note for Omarchy
 
-Tot-style scratch notes in the [Omarchy](https://omarchy.org) bar: ten colored
+Quick scratch notes in the [Omarchy](https://omarchy.org) bar, inspired by Tot: ten colored
 tabs, autosaved plain-text files, keyboard driven, with optional cloud sync
 (Google Drive, S3, FTP and anything else rclone supports) and backups.
 
-![Tot panel](preview.png)
+![Quick Note panel](preview.png)
 
 - 10 notes, one color each (taken from your current Omarchy theme)
 - Autosave to `~/.local/share/omarchy-tot/note-1.md` … `note-10.md`
@@ -47,7 +47,7 @@ rm -f ~/.local/bin/tot-notes ~/.local/bin/tot-sync
 omarchy plugin remove momoledev.tot
 ```
 
-If you used `--bindings`, delete the `-- Tot notes` block at the end of
+If you used `--bindings`, delete the `-- Quick Note` block at the end of
 `~/.config/hypr/bindings.lua`. Your notes are kept. Delete them, the backups and
 the settings only if you no longer need them:
 
@@ -126,7 +126,7 @@ widget settings):
 
 These folders are created with mode `0700` and their files with `0600`, so other
 users of the machine cannot read your notes. Cloud credentials are stored by
-rclone in its own config (`~/.config/rclone/rclone.conf`), never by Tot.
+rclone in its own config (`~/.config/rclone/rclone.conf`), never by Quick Note.
 
 ## License
 

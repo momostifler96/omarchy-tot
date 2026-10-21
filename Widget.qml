@@ -2,7 +2,7 @@ import QtQuick
 import qs.Commons
 import qs.Ui
 
-// Bar button for the Tot notes panel. The panel itself lives in Panel.qml;
+// Bar button for the Quick Note panel. The panel itself lives in Panel.qml;
 // this widget only owns the icon and forwards the open/close contract the
 // shell uses for `omarchy-shell shell toggle momoledev.tot`.
 BarWidget {

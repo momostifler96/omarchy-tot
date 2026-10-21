@@ -1,5 +1,5 @@
 #!/bin/bash
-# Cloud sync and backups for Tot notes (momoledev.tot shell plugin), via rclone.
+# Cloud sync and backups for Quick Note (momoledev.tot shell plugin), via rclone.
 #
 #   tot-sync setup [google|s3|ftp|custom]  configure the cloud remote (interactive)
 #   tot-sync sync                          two-way sync notes <-> cloud
@@ -76,11 +76,11 @@ declare -A M=(
   [de.sync_ok]="Synchronisierung OK (%s)"
   [pt.sync_ok]="Sincronização OK (%s)"
 
-  [en.notify_title]="Tot: sync failed"
-  [fr.notify_title]="Tot : échec de la synchro"
-  [es.notify_title]="Tot: falló la sincronización"
-  [de.notify_title]="Tot: Synchronisierung fehlgeschlagen"
-  [pt.notify_title]="Tot: falha na sincronização"
+  [en.notify_title]="Quick Note: sync failed"
+  [fr.notify_title]="Quick Note : échec de la synchro"
+  [es.notify_title]="Quick Note: falló la sincronización"
+  [de.notify_title]="Quick Note: Synchronisierung fehlgeschlagen"
+  [pt.notify_title]="Quick Note: falha na sincronização"
 
   [en.archive_fail]="could not create the archive"
   [fr.archive_fail]="échec de l'archive"
@@ -375,8 +375,8 @@ save_conf() {
   # The file is sourced on every run: quote values so a folder name typed in
   # the wizard can never be read back as shell code.
   {
-    echo "# Tot notes cloud sync (read by ~/.local/bin/tot-sync)"
-    echo "# rclone remote + folder, e.g. tot-gdrive:Tot, tot-s3:my-bucket/tot, tot-ftp:tot"
+    echo "# Quick Note cloud sync (read by ~/.local/bin/tot-sync)"
+    echo "# rclone remote + folder, e.g. tot-gdrive:QuickNote, tot-s3:my-bucket/tot, tot-ftp:tot"
     printf 'REMOTE=%q\n' "$REMOTE"
     echo "# Local snapshots kept in $BACKUP_DIR"
     printf 'LOCAL_BACKUP_KEEP=%q\n' "$LOCAL_BACKUP_KEEP"
@@ -530,7 +530,7 @@ cmd_setup() {
     name=tot-gdrive
     t google_info; echo
     "$RCLONE" config create "$name" drive scope drive.file || die "$(t setup_fail "Google Drive")"
-    ask "$(t folder) (Google Drive)" "Tot"
+    ask "$(t folder) (Google Drive)" "QuickNote"
     folder=$REPLY
     ;;
   s3)
@@ -569,7 +569,7 @@ cmd_setup() {
     "$RCLONE" listremotes
     ask "$(t remote_name)"
     name=${REPLY%:}
-    ask "$(t folder)" "Tot"
+    ask "$(t folder)" "QuickNote"
     folder=$REPLY
     ;;
   *) die "$(t unknown_kind "$kind")" ;;
@@ -600,7 +600,7 @@ cmd_enable() {
 
   cat >"$UNIT_DIR/tot-sync.service" <<EOF
 [Unit]
-Description=Tot notes cloud sync
+Description=Quick Note cloud sync
 
 [Service]
 Type=oneshot
@@ -610,7 +610,7 @@ EOF
   # Saves arrive every few hundred ms while typing: wait, then sync once.
   cat >"$UNIT_DIR/tot-sync-debounced.service" <<EOF
 [Unit]
-Description=Tot notes cloud sync (after edits)
+Description=Quick Note cloud sync (after edits)
 
 [Service]
 Type=oneshot
@@ -620,7 +620,7 @@ EOF
 
   cat >"$UNIT_DIR/tot-sync.timer" <<EOF
 [Unit]
-Description=Tot notes cloud sync every 5 minutes
+Description=Quick Note cloud sync every 5 minutes
 
 [Timer]
 OnBootSec=1min
@@ -633,7 +633,7 @@ EOF
 
   cat >"$UNIT_DIR/tot-sync.path" <<EOF
 [Unit]
-Description=Sync Tot notes when they change
+Description=Sync Quick Note notes when they change
 
 [Path]
 PathChanged=$NOTES_DIR
@@ -645,7 +645,7 @@ EOF
 
   cat >"$UNIT_DIR/tot-backup.service" <<EOF
 [Unit]
-Description=Tot notes backup
+Description=Quick Note backup
 
 [Service]
 Type=oneshot
@@ -654,7 +654,7 @@ EOF
 
   cat >"$UNIT_DIR/tot-backup.timer" <<EOF
 [Unit]
-Description=Daily Tot notes backup
+Description=Daily Quick Note backup
 
 [Timer]
 OnCalendar=daily

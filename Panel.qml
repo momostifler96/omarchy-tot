@@ -6,7 +6,7 @@ import qs.Commons
 import qs.Ui
 import "I18n.js" as I18n
 
-// Tot-style notes: ten colored tabs, each backed by a plain-text file in
+// Quick Note (Tot-style notes): ten colored tabs, each backed by a plain-text file in
 // ~/.local/share/omarchy-tot/note-N.md. The current tab is shared through
 // ~/.local/state/omarchy-tot/current so every monitor's bar instance (and the
 // `tot-notes N` script) agrees on it.

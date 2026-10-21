@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
   "id": "momoledev.tot",
-  "name": "Tot",
+  "name": "Quick Note",
   "version": "1.0.1",
   "author": "momoledev",
   "license": "MIT",
-  "description": "Tot-style scratch notes in the bar: 10 colored tabs, autosaved plain-text files, keyboard driven.",
+  "description": "Quick scratch notes in the bar: 10 colored tabs, autosaved plain-text files, keyboard driven.",
   "kinds": [
     "bar-widget"
   ],
@@ -13,7 +13,7 @@
     "barWidget": "Widget.qml"
   },
   "barWidget": {
-    "displayName": "Tot",
+    "displayName": "Quick Note",
     "description": "Ten quick notes with keyboard navigation.",
     "category": "Productivity",
     "allowMultiple": false,
