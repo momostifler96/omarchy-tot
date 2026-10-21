@@ -4,22 +4,58 @@ Tot-style scratch notes in the [Omarchy](https://omarchy.org) bar: ten colored
 tabs, autosaved plain-text files, keyboard driven, with optional cloud sync
 (Google Drive, S3, FTP and anything else rclone supports) and backups.
 
+![Tot panel](preview.png)
+
 - 10 notes, one color each (taken from your current Omarchy theme)
 - Autosave to `~/.local/share/omarchy-tot/note-1.md` … `note-10.md`
 - Global shortcuts to open the panel or jump straight to a note
 - Two-way cloud sync + daily snapshots with retention and restore
 - UI in English, French, Spanish, German and Portuguese
 
+## Dependencies
+
+- Omarchy (Quattro shell) and Hyprland: required.
+- `bash`, `jq`, `flock`, `tar`, `notify-send`: already present on Omarchy.
+- [rclone](https://rclone.org): optional, only for cloud sync.
+
 ## Install
 
 ```bash
 omarchy plugin add https://github.com/momostifler96/omarchy-tot.git --enable
-~/.config/omarchy/plugins/momoledev.tot/install.sh --bindings
+```
+
+The notes panel works right away. Two optional extras:
+
+```bash
+~/.config/omarchy/plugins/momoledev.tot/install.sh             # tot-notes / tot-sync commands
+~/.config/omarchy/plugins/momoledev.tot/install.sh --bindings  # + global shortcuts
 ```
 
 `install.sh` links the `tot-notes` and `tot-sync` scripts into `~/.local/bin`.
-`--bindings` also appends the shortcuts below to `~/.config/hypr/bindings.lua`
-(a backup is made first).
+Only with `--bindings`, it also appends the shortcuts below to
+`~/.config/hypr/bindings.lua`, after saving a timestamped backup
+(`bindings.lua.bak.<time>`). Nothing else in your configuration is modified.
+
+## Uninstall
+
+```bash
+tot-sync disable 2>/dev/null                 # stop automatic sync, if enabled
+rm -f ~/.config/systemd/user/tot-sync{.service,-debounced.service,.timer,.path} \
+      ~/.config/systemd/user/tot-backup.{service,timer}
+systemctl --user daemon-reload
+rm -f ~/.local/bin/tot-notes ~/.local/bin/tot-sync
+omarchy plugin remove momoledev.tot
+```
+
+If you used `--bindings`, delete the `-- Tot notes` block at the end of
+`~/.config/hypr/bindings.lua`. Your notes are kept. Delete them, the backups and
+the settings only if you no longer need them:
+
+```bash
+rm -rf ~/.local/share/omarchy-tot ~/.local/share/omarchy-tot-backups \
+       ~/.local/state/omarchy-tot ~/.config/omarchy-tot
+rclone config delete tot-gdrive   # or tot-s3 / tot-ftp, if created by the setup wizard
+```
 
 Move the icon elsewhere in the bar with
 `omarchy bar move momoledev.tot --section center`.
@@ -87,6 +123,10 @@ widget settings):
 | `~/.local/share/omarchy-tot-backups/` | local snapshots                 |
 | `~/.local/state/omarchy-tot/`         | current tab, sync status        |
 | `~/.config/omarchy-tot/sync.conf`     | cloud settings                  |
+
+These folders are created with mode `0700` and their files with `0600`, so other
+users of the machine cannot read your notes. Cloud credentials are stored by
+rclone in its own config (`~/.config/rclone/rclone.conf`), never by Tot.
 
 ## License
 

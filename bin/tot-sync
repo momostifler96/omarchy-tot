@@ -13,6 +13,9 @@
 
 set -uo pipefail
 
+# Notes, snapshots, status and settings are private to the user.
+umask 077
+
 NOTES_DIR="$HOME/.local/share/omarchy-tot"
 BACKUP_DIR="$HOME/.local/share/omarchy-tot-backups"
 STATE_DIR="$HOME/.local/state/omarchy-tot"
@@ -341,6 +344,11 @@ t() {
 }
 
 mkdir -p "$NOTES_DIR" "$BACKUP_DIR" "$STATE_DIR"
+# Tighten folders created world-readable by older versions.
+chmod 700 "$NOTES_DIR" "$BACKUP_DIR" "$STATE_DIR"
+[[ -d $CONF_DIR ]] && chmod 700 "$CONF_DIR"
+[[ -f $CONF ]] && chmod 600 "$CONF"
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'tot-*.tar.gz' -exec chmod 600 -- {} +
 
 die() { echo "tot-sync: $*" >&2; exit 1; }
 
@@ -363,17 +371,21 @@ require_remote() {
 
 save_conf() {
   mkdir -p "$CONF_DIR"
-  cat >"$CONF" <<EOF
-# Tot notes cloud sync (read by ~/.local/bin/tot-sync)
-# rclone remote + folder, e.g. tot-gdrive:Tot, tot-s3:my-bucket/tot, tot-ftp:tot
-REMOTE="$REMOTE"
-# Local snapshots kept in $BACKUP_DIR
-LOCAL_BACKUP_KEEP=$LOCAL_BACKUP_KEEP
-# Cloud snapshots older than this are deleted
-REMOTE_BACKUP_KEEP_DAYS=$REMOTE_BACKUP_KEEP_DAYS
-# Extra rclone bisync flags (e.g. "--compare size" for FTP servers without mtime)
-BISYNC_EXTRA="$BISYNC_EXTRA"
-EOF
+  chmod 700 "$CONF_DIR"
+  # The file is sourced on every run: quote values so a folder name typed in
+  # the wizard can never be read back as shell code.
+  {
+    echo "# Tot notes cloud sync (read by ~/.local/bin/tot-sync)"
+    echo "# rclone remote + folder, e.g. tot-gdrive:Tot, tot-s3:my-bucket/tot, tot-ftp:tot"
+    printf 'REMOTE=%q\n' "$REMOTE"
+    echo "# Local snapshots kept in $BACKUP_DIR"
+    printf 'LOCAL_BACKUP_KEEP=%q\n' "$LOCAL_BACKUP_KEEP"
+    echo "# Cloud snapshots older than this are deleted"
+    printf 'REMOTE_BACKUP_KEEP_DAYS=%q\n' "$REMOTE_BACKUP_KEEP_DAYS"
+    echo "# Extra rclone bisync flags (e.g. \"--compare size\" for FTP servers without mtime)"
+    printf 'BISYNC_EXTRA=%q\n' "$BISYNC_EXTRA"
+  } >"$CONF"
+  chmod 600 "$CONF"
 }
 
 bisync_marker() { echo "$STATE_DIR/bisync-$(printf '%s' "$REMOTE" | md5sum | cut -c1-12)"; }

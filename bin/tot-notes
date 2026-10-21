@@ -14,7 +14,7 @@ close) omarchy-shell -q shell hide "$id" ;;
 0 | [1-9] | 10)
   tab=$1
   [[ $tab == 0 ]] && tab=10
-  mkdir -p "$state"
+  mkdir -p -m 700 "$state"
   printf '%s\n' "$tab" >"$state/current"
   omarchy-shell -q shell summon "$id" '{}'
   ;;

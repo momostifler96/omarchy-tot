@@ -309,9 +309,14 @@ Panel {
     onTriggered: root.now = Date.now() / 1000
   }
 
+  // Notes are private: keep both folders 0700 (atomic writes recreate note
+  // files with the shell's umask, so the folder is what protects them) and
+  // tighten files left readable by older versions.
   Process {
     running: true
-    command: ["mkdir", "-p", root.dataDir, root.stateDir]
+    command: ["sh", "-c",
+      "mkdir -p -- \"$1\" \"$2\" && chmod 700 -- \"$1\" \"$2\" && find \"$1\" \"$2\" -maxdepth 1 -type f -exec chmod 600 -- {} +",
+      "sh", root.dataDir, root.stateDir]
   }
 
   Timer {
