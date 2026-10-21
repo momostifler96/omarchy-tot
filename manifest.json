@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "momoledev.tot",
   "name": "Quick Note",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "author": "momoledev",
   "license": "MIT",
   "description": "Quick scratch notes in the bar: 10 colored tabs, autosaved plain-text files, keyboard driven.",

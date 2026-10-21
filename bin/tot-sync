@@ -513,6 +513,32 @@ ask() { # prompt [default] -> REPLY
 
 ask_secret() { read -rsp "$1 : " REPLY; echo; }
 
+# set_remote_secret remote key: stores $TOT_SECRET as "key = value" in the
+# remote's section of rclone.conf. Secrets never go through rclone's command
+# line, which other local users can read in /proc/<pid>/cmdline; awk reads the
+# value from its environment, which only the user can read. The file is
+# replaced atomically and stays 0600 (umask 077).
+set_remote_secret() {
+  local remote=$1 key=$2 conf tmp
+  conf=$("$RCLONE" config file | tail -1)
+  [[ -f $conf ]] || return 1
+  if head -1 "$conf" | grep -q '^# Encrypted rclone configuration'; then
+    echo "tot-sync: encrypted rclone config: use 'rclone config', then the \"custom\" option." >&2
+    return 1
+  fi
+  tmp=$(mktemp "$conf.XXXXXX") || return 1
+  if ! awk -v sect="[$remote]" -v key="$key" '
+      BEGIN { secret = ENVIRON["TOT_SECRET"] }
+      /^\[.*\]$/ { insect = ($0 == sect); print; if (insect) { print key " = " secret; done = 1 }; next }
+      insect && $0 ~ "^" key "[ \t]*=" { next }
+      { print }
+      END { exit !done }' "$conf" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  chmod 600 "$tmp" && mv -f "$tmp" "$conf"
+}
+
 cmd_setup() {
   local kind=${1:-} name folder
   if [[ -z $kind ]]; then
@@ -543,9 +569,11 @@ cmd_setup() {
     ask "$(t endpoint)" ""; local endpoint=$REPLY
     ask "Bucket"; local bucket=$REPLY
     ask "$(t folder) (bucket)" "tot"; local prefix=$REPLY
-    local args=(provider "$provider" access_key_id "$key" secret_access_key "$secret" region "$region")
+    local args=(provider "$provider" access_key_id "$key" region "$region")
     [[ -n $endpoint ]] && args+=(endpoint "$endpoint")
     "$RCLONE" config create "$name" s3 "${args[@]}" --non-interactive >/dev/null || die "$(t setup_fail S3)"
+    TOT_SECRET=$secret set_remote_secret "$name" secret_access_key || die "$(t setup_fail S3)"
+    secret=""
     folder="$bucket/$prefix"
     "$RCLONE" mkdir "$name:$bucket" >/dev/null 2>&1
     ;;
@@ -557,8 +585,13 @@ cmd_setup() {
     ask_secret "$(t password)"; local pass=$REPLY
     ask "$(t tls)" "$(t yes)"; local tls=false
     [[ ${REPLY,,} == "$(t yes)"* || ${REPLY,,} == y* ]] && tls=true
-    "$RCLONE" config create "$name" ftp host "$host" port "$port" user "$user" pass "$pass" \
+    "$RCLONE" config create "$name" ftp host "$host" port "$port" user "$user" \
       explicit_tls "$tls" --non-interactive >/dev/null || die "$(t setup_fail FTP)"
+    # rclone stores FTP passwords obscured; "obscure -" reads it from stdin.
+    local obscured
+    obscured=$(printf '%s\n' "$pass" | "$RCLONE" obscure -) || die "$(t setup_fail FTP)"
+    pass=""
+    TOT_SECRET=$obscured set_remote_secret "$name" pass || die "$(t setup_fail FTP)"
     ask "$(t folder)" "tot"
     folder=$REPLY
     # Many FTP servers can't set modification times; compare by size then.
